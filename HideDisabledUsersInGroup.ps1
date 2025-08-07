@@ -79,6 +79,7 @@ Import-Module ActiveDirectory -ErrorAction Stop
 Import-Module ADSync -ErrorAction Stop
 
 # Strings needed for LDAP query - provided for readability
+$groupName = "GAL_Hidden_DisabledUsers"
 $disabledUserValue = "userAccountControl:1.2.840.113556.1.4.803:=2"
 $msExchHideTrue = "msExchHideFromAddressLists=TRUE"
 
@@ -127,7 +128,7 @@ function Write-LogVerbose {
 try {
     # PERFORMANCE: Use a single, efficient LDAP filter instead of multiple queries.
     # This finds all users who are members of the group, are disabled, and are not already hidden.
-    $group = Get-ADGroup -Identity "GAL_Hidden_DisabledUsers" -ErrorAction Stop
+    $group = Get-ADGroup -Identity $groupName -ErrorAction Stop
     # Debug dump of the group
     Write-Debug "Group object details:`n$(
         $group |
