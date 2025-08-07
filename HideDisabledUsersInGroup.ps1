@@ -158,13 +158,18 @@ function Write-LogEntry {
     # Invoke the appropriate cmdlet based on the level
     if ($logLevelMap.ContainsKey($Level)) {
         $logLevelMap[$Level].Invoke()
-    } else {
+    }
+    else {
         Write-Warning "Unknown log level '$Level'. Message: $Message"
     }
-
 }
 
+Write-LogEntry -Level INFO -Message "Starting script with effective parameter values:"
+Write-LogEntry -Level INFO -Message "$PSBoundParameters | Format-List * | Out-String -Width 80"
 
+if ($WhatIfPreference) {
+    Write-LogEntry -Level INFO -Message "Running in WhatIf mode. No changes will be made."
+}
 
 # Get members of the group and filter for disabled accounts that are not already hidden
 try {
