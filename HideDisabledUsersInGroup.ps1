@@ -79,7 +79,8 @@ param(
 # Set ConfirmPreference based on session context
 if ($Host.UI.RawUI -and $Host.Name -ne 'ServerRemoteHost') {
     $ConfirmPreference = 'High'
-} else {
+}
+else {
     $ConfirmPreference = 'None'
 }
 
@@ -120,7 +121,7 @@ if (-not (Test-Path $logDir)) {
 }
 
 # Rotate and compress log if it grows too large
-if (Test-Path $logPath -and (Get-Item $logPath).Length -gt 5MB) {
+if ((Test-Path $logPath) -and (Get-Item $logPath).Length -gt 5MB) {
     try {
         $rotatedLogFilename = (Get-Date).ToString('yyyyMMddHHmm')
         $rotatedLogPath = "$logPath.$rotatedLogFilename.bak"
@@ -171,6 +172,76 @@ function Write-LogEntry {
     }
 }
 
+function ConvertFrom-UnescapedLdapFilter {
+    <#
+    .SYNOPSIS
+        Escapes special characters in a string for safe inclusion in an LDAP filter.
+
+    .DESCRIPTION
+        Replaces each byte of input (UTF-8) as follows:
+        - '\'  → '\5c'
+        - '*'  → '\2a'
+        - '('  → '\28'
+        - ')'  → '\29'
+        - 0     → '\00'
+        - any byte > 0x7F → '\XX' (two-digit hex)
+        - everything else → literal character
+
+    .PARAMETER InputString
+        The raw string to be escaped (e.g. a CN or DN component).
+
+    .OUTPUTS
+        [string] — the escaped filter component.
+
+    .EXAMPLE
+        Escape-LdapFilter 'Admins'
+        # → 'Admins'
+
+    .EXAMPLE
+        Escape-LdapFilter 'CN=Doe\, Jöhn,OU=People,DC=ds,DC=augur,DC=com'
+        # → 'CN=Doe\5c\2c J\c3\xb6hn\2cOU\3dPeople\2cDC\3dds\2cDC\3daugur\2cDC\3dcom'
+
+    .NOTES
+        Based on Oracle Directory Server and RFC 4515 escaping rules.
+        See https://tools.ietf.org/html/rfc4515
+
+    .LINK
+        https://tools.ietf.org/html/rfc4515
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InputString
+    )
+
+    # If null or empty, return empty
+    if ([string]::IsNullOrEmpty($InputString)) { return '' }
+
+    # Get UTF-8 bytes
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
+    $sb = [System.Text.StringBuilder]::new()
+
+    foreach ($b in $bytes) {
+        switch ($b) {
+            0x5C { $sb.Append('\5c')        | Out-Null }  # backslash
+            0x2A { $sb.Append('\2a')        | Out-Null }  # asterisk
+            0x28 { $sb.Append('\28')        | Out-Null }  # (
+            0x29 { $sb.Append('\29')        | Out-Null }  # )
+            0x00 { $sb.Append('\00')        | Out-Null }  # null
+            { $_ -gt 0x7F } {
+                # non-ASCII
+                $hex = '{0:x2}' -f $b
+                $sb.Append("\$hex")         | Out-Null
+            }
+            default {
+                # safe ASCII; append literal character
+                $sb.Append([char]$b)        | Out-Null
+            }
+        }
+    }
+
+    return $sb.ToString()
+}
+
 Write-LogEntry -Level DEBUG -Message "Starting script with effective parameter values:"
 Write-LogEntry -Level DEBUG -Message "n$($PSBoundParameters | Format-List * | Out-String -Width 80)"
 
@@ -189,7 +260,7 @@ try {
         Format-List * |
         Out-String -Width 80
     )"
-    $escapedDN = [System.DirectoryServices.Protocols.LdapFilter]::Escape($group.DistinguishedName)
+    $escapedDN = ConvertFrom-UnescapedLdapFilter($group.DistinguishedName)
     $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(!($msExchHideTrue)))"
     Write-LogEntry -Level DEBUG -Message "LDAP filter: $ldapFilter"
     $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists -ErrorAction Stop
@@ -254,7 +325,7 @@ if ($changesMade -and -not $NoSync.IsPresent) {
     Write-LogEntry -Level INFO -Message  "Script completed. Changes were made. Delta Sync requested."
     if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
         try {
-            Start-ADSyncSyncCycle -PolicyType Delta
+            Start-ADSyncSyncCycle -PolicyType Delta -ErrorAction Stop
         }
         catch {
             $errorsEncountered = $true
