@@ -126,31 +126,21 @@ function Get-Timestamp {
     return (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 }
 
-# Write a timestamped entry to the log file
-function Write-Log {
-    param([string]$Message)
-    Add-Content -Path $logPath -Value "$(Get-Timestamp) - $Message"
-}
-
-# Writes an error message to the console and a timestamped entry to the log file
-function Write-LogError {
-    param([string]$errorMessage)
-    Write-Log $errorMessage
-    Write-Error $errorMessage
-}
-
-# Writes a warning message to the console and a timestamped entry to the log file
-function Write-LogWarning {
-    param([string]$warningMessage)
-    Write-Log $warningMessage
-    Write-Warning $warningMessage
-}
-
-# Write general output to log file and / or console depending on user requested level
-function Write-LogVerbose {
-    param([string]$Message)
-    Write-Log $Message
-    Write-Verbose $Message
+# Write a message to the log and the specified output stream
+function Write-LogEntry {
+    param(
+        [ValidateSet('DEBUG', 'INFO', 'WARN', 'ERROR')]
+        [string]$Level,
+        [string]$Message
+    )
+    $ts = Get-Timestamp
+    Add-Content $logPath "$ts [$Level] $Message"
+    switch ($Level) {
+        'DEBUG' { Write-Debug   $Message }
+        'INFO' { Write-Verbose $Message }
+        'WARN' { Write-Warning $Message }
+        'ERROR' { Write-Error   $Message }
+    }
 }
 
 # Get members of the group and filter for disabled accounts that are not already hidden
@@ -159,30 +149,30 @@ try {
     # This finds all users who are members of the group, are disabled, and are not already hidden.
     $group = Get-ADGroup -Identity $GroupName -ErrorAction Stop
     # Debug dump of the group
-    Write-Debug "Group object details:`n$(
+    Write-LogEntry -Level WARN -Message "Group object details:`n$(
         $group |
         Format-List * |
         Out-String -Width 80
     )"
     $escapedDN = [System.DirectoryServices.Protocols.LdapFilter]::Escape($group.DistinguishedName)
     $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(!($msExchHideTrue)))"
-    Write-Debug "LDAP filter: $ldapFilter"
+    Write-LogEntry -Level WARN -Message "LDAP filter: $ldapFilter"
     $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists -ErrorAction Stop
     # Debug dump of groupMembers collection
-    Write-Debug "Member objects:`n$(
+    Write-LogEntry -Level WARN -Message "Member objects:`n$(
         $groupMembers |
         Format-List SamAccountName,Enabled,msExchHideFromAddressLists |
         Out-String -Width 80
     )"
 
     if (-not $groupMembers) {
-        Write-LogVerbose "No changes needed. All members are already hidden or are enabled."
+        Write-LogEntry -Level INFO -Message  "No changes needed. All members are already hidden or are enabled."
         Exit 0 # Nothing to do so indicate success
     }
 }
 catch {
     $errorMsg = "FATAL ERROR: Failed to retrieve group members or their properties. Error details: $($_.Exception.Message)"
-    Write-LogError $errorMsg
+    Write-LogEntry -Level ERROR -Message  $errorMsg
     Exit 1  # Error retrieving group
 }
 
@@ -197,7 +187,7 @@ $failedSync = $false
 $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 # Log user count before beginning 
-Write-LogVerbose "Found $($groupMembers.Count) user(s) to process."
+Write-LogEntry -Level INFO -Message  "Found $($groupMembers.Count) user(s) to process."
 
 # Iterate through users in the group, set the attribute to hide from address lists, and add record change timestamp in extension attribute 15
 foreach ($user in $groupMembers) {
@@ -209,7 +199,7 @@ foreach ($user in $groupMembers) {
             # Indicate that we have made changes that require sync
             $changesMade = $true
             # Log the successful action
-            Write-LogVerbose "Successfully hid user $($user.SamAccountName) from the GAL."
+            Write-LogEntry -Level INFO -Message  "Successfully hid user $($user.SamAccountName) from the GAL."
         }
     }
     catch {
@@ -219,14 +209,14 @@ foreach ($user in $groupMembers) {
         $failedUsers += $user.SamAccountName
         # Log the specific error and user
         $errorMsg = $_ | Out-String
-        Write-LogWarning "Warning: Failed to update user $($user.SamAccountName): $errorMsg"
+        Write-LogEntry -Level WARN -Message  "Warning: Failed to update user $($user.SamAccountName): $errorMsg"
         # We want to process other users even if one fails, so logging the error and noting it at the end of the run is sufficient
     }
 }
 
 # Only sync if changes were made to users or NoSync is not specified
 if ($changesMade -and -not $NoSync.IsPresent) {
-    Write-LogVerbose "Script completed. Changes were made. Delta Sync requested."
+    Write-LogEntry -Level INFO -Message  "Script completed. Changes were made. Delta Sync requested."
     if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
         try {
             Start-ADSyncSyncCycle -PolicyType Delta
@@ -235,30 +225,30 @@ if ($changesMade -and -not $NoSync.IsPresent) {
             $errorsEncountered = $true
             $failedSync = $true
             $failedSyncMsg = "Start-ADSyncSyncCycle Delta sync failed with the following error: $_"
-            Write-LogWarning $failedSyncMsg
+            Write-LogEntry -Level WARN -Message  $failedSyncMsg
         }
     }
 }
 else {
-    Write-LogVerbose "Script completed. No changes were necessary or NoSync was specified."
+    Write-LogEntry -Level INFO -Message  "Script completed. No changes were necessary or NoSync was specified."
 }
 
 # Set exit code based on whether sync or user errors occurred and indicate which users failed, if any
 if ($errorsEncountered) {
-    $errorCode = 1
-    Write-LogWarning "Script finished with one or more errors."
+    $errorCode = 1 # initial value, should never be returned since errors are either users or sync
+    Write-LogEntry -Level WARN -Message  "Script finished with one or more errors."
     if ($failedUsers.Count -gt 0) {
-        $errorCode += 1
+        $errorCode += 1 # results in error code 2 if only users
         $failedUsersMsg = "The following $($failedUsers.Count) user(s) failed to update: $($failedUsers -join ', ')"
-        Write-LogWarning $failedUsersMsg
+        Write-LogEntry -Level WARN -Message  $failedUsersMsg
     }
     if ($failedSync) {
-        $errorCode += 2
-        Write-LogWarning "Entra ID Connect AD Synchronization failed. Review log for details."
+        $errorCode += 2 # results in error code 3 if only sync, 4 if users and sync
+        Write-LogEntry -Level WARN -Message  "Entra ID Connect AD Synchronization failed. Review log for details."
     }
-    Exit $errorCode # Custom exit codes for partial failure
+    Exit $errorCode # Custom exit codes 2, 3, or 4 for partial failure
 }
 else {
-    Write-LogVerbose "Script finished successfully."
+    Write-LogEntry -Level INFO -Message  "Script finished successfully."
     Exit 0 # Success
 }
