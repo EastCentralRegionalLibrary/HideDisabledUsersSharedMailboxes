@@ -92,6 +92,27 @@ if (-not (Test-Path $logDir)) {
     New-Item -Path $logDir -ItemType Directory -Force | Out-Null
 }
 
+# Rotate and compress log if it grows too large
+
+if ((Get-Item $logPath).Length -gt 5MB) {
+    try {
+        $rotatedLogFilename = (Get-Date).ToString('yyyyMMddHHmm')
+        $rotatedLogPath = "$logPath.$rotatedLogFilename.bak"
+        $zipPath = "$logPath.$rotatedLogFilename.zip"
+        Move-Item $logPath $rotatedLogPath
+        # Create a new, empty log file for subsequent logging
+        New-Item -Path $logPath -ItemType File -Force | Out-Null
+        # Compress the rotated log file
+        Compress-Archive -Path $rotatedLogPath -DestinationPath $zipPath
+        # Remove the ( now archived ) rotated log file
+        Remove-Item -Path $rotatedLogPath
+    } 
+    catch {
+        Write-Warning "Failed to compress or remove log file: $_"
+    }
+}
+
+
 # Returns the current timestamp
 function Get-Timestamp {
     return (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
