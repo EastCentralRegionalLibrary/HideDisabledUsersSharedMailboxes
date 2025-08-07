@@ -100,7 +100,7 @@ Import-Module ADSync -ErrorAction Stop
 
 # Fail fast if the group name cannot be found - no need to create logs etc.
 if (-not (Get-ADGroup -Identity $GroupName -ErrorAction SilentlyContinue)) {
-    Write-Error "AD group ‘$GroupName’ not found."
+    Write-Error "AD group '$GroupName' not found."
     Exit 1
 }
 
@@ -243,9 +243,9 @@ function ConvertFrom-UnescapedLdapFilter {
 }
 
 Write-LogEntry -Level DEBUG -Message "Starting script with effective parameter values:"
-Write-LogEntry -Level DEBUG -Message "n$($PSBoundParameters | Format-List * | Out-String -Width 80)"
+Write-LogEntry -Level DEBUG -Message "`n$($PSBoundParameters | Format-List * | Out-String -Width 80)"
 
-if ($PSCmdlet.ShouldProcess) {
+if ($WhatIfPreference) {
     Write-LogEntry -Level INFO -Message "Running in WhatIf mode. No changes will be made."
 }
 
