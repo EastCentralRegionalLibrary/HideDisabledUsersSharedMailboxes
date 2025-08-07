@@ -18,6 +18,12 @@
 .PARAMETER Confirm
     PowerShell standard switch. When specified, prompts for confirmation before applying changes.
 
+.PARAMETER GroupName
+    The name of the AD Security Group that contains the disabled users to be hidden. Defaults to GAL_Hidden_DisabledUsers.
+
+.PARAMETER NoSync
+    When specified, skips ADSync cycle.
+
 .OUTPUTS
     Write-Verbose, Write-Debug, Write-Warning, Write-Error and a log file at GAL_Hide_Log.txt in the script folder.
 
@@ -52,6 +58,8 @@
     0 - Success. Script completed without errors and all users (if any) were processed successfully.
     1 - Fatal error. Could not retrieve group or user data from Active Directory.
     2 - Partial failure. Some users failed to update, but the script completed and logged the errors.
+    3 - Partial failure. All users were processed successfully but Entra ID Connect AD Sync failed.
+    4 - Partial failure. Some users failed to update and Entra ID Connect AD Sync failed.
 
 .LICENSE
     MIT License
@@ -61,14 +69,17 @@
 
 # Support WhatIf and Confirm
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param()
+# Allow specifying AD user group name and skipping AD sync
+param(
+    [string]    $GroupName = 'GAL_Hidden_DisabledUsers',
+    [switch]    $NoSync
+)
 
 #Requires -RunAsAdministrator
 # Check for elevation
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
-    Exit 1
+    Write-Error "This script must be run as Administrator." -ErrorAction Stop
 }
 Write-Verbose "Running with administrative privileges."
 
@@ -79,7 +90,6 @@ Import-Module ActiveDirectory -ErrorAction Stop
 Import-Module ADSync -ErrorAction Stop
 
 # Strings needed for LDAP query - provided for readability
-$groupName = "GAL_Hidden_DisabledUsers"
 $disabledUserValue = "userAccountControl:1.2.840.113556.1.4.803:=2"
 $msExchHideTrue = "msExchHideFromAddressLists=TRUE"
 
@@ -93,7 +103,6 @@ if (-not (Test-Path $logDir)) {
 }
 
 # Rotate and compress log if it grows too large
-
 if ((Get-Item $logPath).Length -gt 5MB) {
     try {
         $rotatedLogFilename = (Get-Date).ToString('yyyyMMddHHmm')
@@ -111,7 +120,6 @@ if ((Get-Item $logPath).Length -gt 5MB) {
         Write-Warning "Failed to compress or remove log file: $_"
     }
 }
-
 
 # Returns the current timestamp
 function Get-Timestamp {
@@ -149,7 +157,7 @@ function Write-LogVerbose {
 try {
     # PERFORMANCE: Use a single, efficient LDAP filter instead of multiple queries.
     # This finds all users who are members of the group, are disabled, and are not already hidden.
-    $group = Get-ADGroup -Identity $groupName -ErrorAction Stop
+    $group = Get-ADGroup -Identity $GroupName -ErrorAction Stop
     # Debug dump of the group
     Write-Debug "Group object details:`n$(
         $group |
@@ -184,6 +192,7 @@ $changesMade = $false
 # Variable to indicate if an error was encountered for one or more users
 $errorsEncountered = $false
 $failedUsers = @()
+$failedSync = $false
 # Get a single timestamp for the entire script run for consistency.
 $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
@@ -196,7 +205,7 @@ foreach ($user in $groupMembers) {
         if ($PSCmdlet.ShouldProcess($user.SamAccountName, "Hide from GAL and update extensionAttribute15")) {
             # Hide AD user and set the extension attribute
             $changeTimeStampString = "Hidden from Exchange address book by script $runTimestamp"
-            Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -Verbose:$VerbosePreference -ErrorAction Stop
+            Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -ErrorAction Stop
             # Indicate that we have made changes that require sync
             $changesMade = $true
             # Log the successful action
@@ -215,24 +224,39 @@ foreach ($user in $groupMembers) {
     }
 }
 
-if ($changesMade) {
+# Only sync if changes were made to users or NoSync is not specified
+if ($changesMade -and -not $NoSync.IsPresent) {
     Write-LogVerbose "Script completed. Changes were made. Delta Sync requested."
     if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
-        Start-ADSyncSyncCycle -PolicyType Delta -Verbose:$VerbosePreference
+        try {
+            Start-ADSyncSyncCycle -PolicyType Delta
+        }
+        catch {
+            $errorsEncountered = $true
+            $failedSync = $true
+            $failedSyncMsg = "Start-ADSyncSyncCycle Delta sync failed with the following error: $_"
+            Write-LogWarning $failedSyncMsg
+        }
     }
 }
 else {
-    Write-LogVerbose "Script completed. No changes were necessary."
+    Write-LogVerbose "Script completed. No changes were necessary or NoSync was specified."
 }
 
-# Set exit code based on whether errors occurred and indicate which users failed
+# Set exit code based on whether sync or user errors occurred and indicate which users failed, if any
 if ($errorsEncountered) {
+    $errorCode = 1
     Write-LogWarning "Script finished with one or more errors."
     if ($failedUsers.Count -gt 0) {
+        $errorCode += 1
         $failedUsersMsg = "The following $($failedUsers.Count) user(s) failed to update: $($failedUsers -join ', ')"
         Write-LogWarning $failedUsersMsg
     }
-    Exit 2 # Custom exit code for partial failure
+    if ($failedSync) {
+        $errorCode += 2
+        Write-LogWarning "Entra ID Connect AD Synchronization failed. Review log for details."
+    }
+    Exit $errorCode # Custom exit codes for partial failure
 }
 else {
     Write-LogVerbose "Script finished successfully."
