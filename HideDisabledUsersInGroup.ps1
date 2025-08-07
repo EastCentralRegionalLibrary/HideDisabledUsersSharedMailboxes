@@ -100,6 +100,9 @@ if (-not (Get-ADGroup -Identity $GroupName -ErrorAction SilentlyContinue)) {
 $disabledUserValue = "userAccountControl:1.2.840.113556.1.4.803:=2"
 $msExchHideTrue = "msExchHideFromAddressLists=TRUE"
 
+# Set the location to the same path as our script. Though we don't produce any files other than the logs, we don't want to be in System32 - just in case.
+Set-Location -Path $PSScriptRoot
+
 # Define log file path relative to script location
 $logPath = Join-Path -Path $PSScriptRoot -ChildPath "GAL_Hide_Log.txt"
 
@@ -136,18 +139,29 @@ function Get-Timestamp {
 # Write a message to the log and the specified output stream
 function Write-LogEntry {
     param(
-        [ValidateSet('DEBUG', 'INFO', 'WARN', 'ERROR')]
+        [ValidateSet('DEBUG', 'INFO', 'VERBOSE', 'WARN', 'ERROR')]
         [string]$Level,
         [string]$Message
     )
     $ts = Get-Timestamp
     Add-Content $logPath "$ts [$Level] $Message"
-    switch ($Level) {
-        'DEBUG' { Write-Debug   $Message }
-        'INFO' { Write-Verbose $Message }
-        'WARN' { Write-Warning $Message }
-        'ERROR' { Write-Error   $Message }
+
+    # Define a mapping from log level to output cmdlet
+    $logLevelMap = @{
+        'DEBUG'   = { Write-Debug $Message }
+        'INFO'    = { Write-Information $Message }
+        'VERBOSE' = { Write-Verbose $Message }
+        'WARN'    = { Write-Warning $Message }
+        'ERROR'   = { Write-Error $Message }
     }
+
+    # Invoke the appropriate cmdlet based on the level
+    if ($logLevelMap.ContainsKey($Level)) {
+        $logLevelMap[$Level].Invoke()
+    } else {
+        Write-Warning "Unknown log level '$Level'. Message: $Message"
+    }
+
 }
 
 # Get members of the group and filter for disabled accounts that are not already hidden
@@ -206,7 +220,7 @@ foreach ($user in $groupMembers) {
             # Indicate that we have made changes that require sync
             $changesMade = $true
             # Log the successful action
-            Write-LogEntry -Level INFO -Message  "Successfully hid user $($user.SamAccountName) from the GAL."
+            Write-LogEntry -Level VERBOSE -Message  "Successfully hid user $($user.SamAccountName) from the GAL."
         }
     }
     catch {
