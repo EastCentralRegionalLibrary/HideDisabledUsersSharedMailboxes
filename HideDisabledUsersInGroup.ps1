@@ -19,8 +19,7 @@
     PowerShell standard switch. When specified, prompts for confirmation before applying changes.
 
 .OUTPUTS
-    Log file written to the script directory: GAL_Hide_Log.txt
-    Console output describing actions taken or simulated.
+    Write-Verbose, Write-Debug, Write-Warning, Write-Error and a log file at GAL_Hide_Log.txt in the script folder.
 
 .NOTES
     Created     : 2025-08-06
@@ -61,16 +60,17 @@
 #>
 
 # Support WhatIf and Confirm
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param()
 
 #Requires -RunAsAdministrator
 # Check for elevation
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
     Exit 1
 }
+Write-Verbose "Running with administrative privileges."
 
 # Assumes Domain Controller and ADSync functions on local machine
 # ADSync is included with Entra Connect
@@ -102,51 +102,83 @@ function Write-Log {
     Add-Content -Path $logPath -Value "$(Get-Timestamp) - $Message"
 }
 
+# Writes an error message to the console and a timestamped entry to the log file
+function Write-LogError {
+    param([string]$errorMessage)
+    Write-Log $errorMessage
+    Write-Error $errorMessage
+}
+
+# Writes a warning message to the console and a timestamped entry to the log file
+function Write-LogWarning {
+    param([string]$warningMessage)
+    Write-Log $warningMessage
+    Write-Warning $warningMessage
+}
+
+# Write general output to log file and / or console depending on user requested level
+function Write-LogVerbose {
+    param([string]$Message)
+    Write-Log $Message
+    Write-Verbose $Message
+}
+
 # Get members of the group and filter for disabled accounts that are not already hidden
 try {
     # PERFORMANCE: Use a single, efficient LDAP filter instead of multiple queries.
     # This finds all users who are members of the group, are disabled, and are not already hidden.
     $group = Get-ADGroup -Identity "GAL_Hidden_DisabledUsers" -ErrorAction Stop
+    # Debug dump of the group
+    Write-Debug "Group object details:`n$(
+        $group |
+        Format-List * |
+        Out-String -Width 80
+    )"
     $escapedDN = [System.DirectoryServices.Protocols.LdapFilter]::Escape($group.DistinguishedName)
     $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(!($msExchHideTrue)))"
+    Write-Debug "LDAP filter: $ldapFilter"
     $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists -ErrorAction Stop
+    # Debug dump of groupMembers collection
+    Write-Debug "Member objects:`n$(
+        $groupMembers |
+        Format-List SamAccountName,Enabled,msExchHideFromAddressLists |
+        Out-String -Width 80
+    )"
 
     if (-not $groupMembers) {
-        Write-Log "No changes needed. All members are already hidden or are enabled."
+        Write-LogVerbose "No changes needed. All members are already hidden or are enabled."
         Exit 0 # Nothing to do so indicate success
     }
 }
 catch {
-    $errorMsg = $_.Exception.Message
-    Write-Log "FATAL ERROR: Failed to retrieve group members or their properties. Error details: $errorMsg"
+    $errorMsg = "FATAL ERROR: Failed to retrieve group members or their properties. Error details: $($_.Exception.Message)"
+    Write-LogError $errorMsg
     Exit 1  # Error retrieving group
 }
 
+# Initial state variables
 # Variable to indicate if changes were made that will require sync
 $changesMade = $false
-
 # Variable to indicate if an error was encountered for one or more users
 $errorsEncountered = $false
 $failedUsers = @()
-
 # Get a single timestamp for the entire script run for consistency.
 $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-# Log user count before beginning
-Write-Log "Found $($groupMembers.Count) user(s) to process."
+# Log user count before beginning 
+Write-LogVerbose "Found $($groupMembers.Count) user(s) to process."
 
+# Iterate through users in the group, set the attribute to hide from address lists, and add record change timestamp in extension attribute 15
 foreach ($user in $groupMembers) {
     try {
         if ($PSCmdlet.ShouldProcess($user.SamAccountName, "Hide from GAL and update extensionAttribute15")) {
             # Hide AD user and set the extension attribute
             $changeTimeStampString = "Hidden from Exchange address book by script $runTimestamp"
-            Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -ErrorAction Stop
-            
+            Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -Verbose:$VerbosePreference -ErrorAction Stop
             # Indicate that we have made changes that require sync
             $changesMade = $true
-            
             # Log the successful action
-            Write-Log "Successfully hid user $($user.SamAccountName) from the GAL."
+            Write-LogVerbose "Successfully hid user $($user.SamAccountName) from the GAL."
         }
     }
     catch {
@@ -156,32 +188,31 @@ foreach ($user in $groupMembers) {
         $failedUsers += $user.SamAccountName
         # Log the specific error and user
         $errorMsg = $_ | Out-String
-        Write-Log "ERROR: Failed to update user $($user.SamAccountName): $errorMsg"
+        Write-LogWarning "Warning: Failed to update user $($user.SamAccountName): $errorMsg"
         # We want to process other users even if one fails, so logging the error and noting it at the end of the run is sufficient
     }
 }
 
 if ($changesMade) {
-    Write-Log "Script completed. Changes were made. Delta Sync requested."
+    Write-LogVerbose "Script completed. Changes were made. Delta Sync requested."
     if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
-        Start-ADSyncSyncCycle -PolicyType Delta
+        Start-ADSyncSyncCycle -PolicyType Delta -Verbose:$VerbosePreference
     }
 }
 else {
-    Write-Log "Script completed. No changes were necessary."
+    Write-LogVerbose "Script completed. No changes were necessary."
 }
 
 # Set exit code based on whether errors occurred and indicate which users failed
 if ($errorsEncountered) {
-    Write-Log "Script finished with one or more errors."
+    Write-LogWarning "Script finished with one or more errors."
     if ($failedUsers.Count -gt 0) {
         $failedUsersMsg = "The following $($failedUsers.Count) user(s) failed to update: $($failedUsers -join ', ')"
-        Write-Log $failedUsersMsg
-        Write-Host $failedUsersMsg -ForegroundColor Red
+        Write-LogWarning $failedUsersMsg
     }
     Exit 2 # Custom exit code for partial failure
 }
 else {
-    Write-Log "Script finished successfully."
+    Write-LogVerbose "Script finished successfully."
     Exit 0 # Success
 }
