@@ -107,6 +107,7 @@ if (-not (Get-ADGroup -Identity $GroupName -ErrorAction SilentlyContinue)) {
 # Strings needed for LDAP query - provided for readability
 $disabledUserValue = "userAccountControl:1.2.840.113556.1.4.803:=2"
 $msExchHideTrue = "msExchHideFromAddressLists=TRUE"
+$mailNicknameEmpty = "!mailNickname=*" # Deal with Microsoft LDAP quirk - needs the not operator inside the parentheses
 
 # Set the location to the same path as our script. Though we don't produce any files other than the logs, we don't want to be in System32 - just in case.
 Set-Location -Path $PSScriptRoot
@@ -230,7 +231,7 @@ function ConvertFrom-UnescapedLdapFilter {
             { $_ -gt 0x7F } {
                 # non-ASCII
                 $hex = '{0:x2}' -f $b
-                $sb.Append("\$hex")         | Out-Null
+                $sb.Append("\\" + "$hex")   | Out-Null
             }
             default {
                 # safe ASCII; append literal character
@@ -261,9 +262,9 @@ try {
         Out-String -Width 80
     )"
     $escapedDN = ConvertFrom-UnescapedLdapFilter($group.DistinguishedName)
-    $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(!($msExchHideTrue)))"
+    $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(|(!($msExchHideTrue))($mailNicknameEmpty)))"
     Write-LogEntry -Level DEBUG -Message "LDAP filter: $ldapFilter"
-    $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists -ErrorAction Stop
+    $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists, mailNickname -ErrorAction Stop
     # Debug dump of groupMembers collection
     Write-LogEntry -Level DEBUG -Message "Member objects:`n$(
         $groupMembers |
@@ -295,13 +296,23 @@ $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 # Log user count before beginning 
 Write-LogEntry -Level INFO -Message  "Found $($groupMembers.Count) user(s) to process."
 
-# Iterate through users in the group, set the attribute to hide from address lists, and add record change timestamp in extension attribute 15
+# Iterate through users in the group, set the attribute to hide from address lists, and add record change timestamp in extension attribute 15.
+# If the user does not have the mailNickname set, set it to the SamAccountName
 foreach ($user in $groupMembers) {
     try {
         if ($PSCmdlet.ShouldProcess($user.SamAccountName, "Hide from GAL and update extensionAttribute15")) {
             # Hide AD user and set the extension attribute
             $changeTimeStampString = "Hidden from Exchange address book by script $runTimestamp"
-            Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -ErrorAction Stop
+            $replaceParams = @{
+                msExchHideFromAddressLists = $true
+                extensionAttribute15       = $changeTimeStampString
+            }
+            # If mailNickname is empty, add it
+            if ($user.mailNickname) {
+                $replaceParams.mailNickname = $user.SamAccountName
+            }
+
+            Set-ADUser -Identity $user.SamAccountName -Replace  $replaceParams -ErrorAction Stop
             # Indicate that we have made changes that require sync
             $changesMade = $true
             # Log the successful action
