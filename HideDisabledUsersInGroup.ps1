@@ -71,6 +71,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 # Allow specifying AD user group name and skipping AD sync
 param(
+    [ValidateNotNullOrEmpty()]
     [string]    $GroupName = 'GAL_Hidden_DisabledUsers',
     [switch]    $NoSync
 )
@@ -89,6 +90,12 @@ Write-Verbose "Running with administrative privileges."
 Import-Module ActiveDirectory -ErrorAction Stop
 Import-Module ADSync -ErrorAction Stop
 
+# Fail fast if the group name cannot be found - no need to create logs etc.
+if (-not (Get-ADGroup -Identity $GroupName -ErrorAction SilentlyContinue)) {
+    Write-Error "AD group ‘$GroupName’ not found."
+    Exit 1
+}
+
 # Strings needed for LDAP query - provided for readability
 $disabledUserValue = "userAccountControl:1.2.840.113556.1.4.803:=2"
 $msExchHideTrue = "msExchHideFromAddressLists=TRUE"
@@ -103,7 +110,7 @@ if (-not (Test-Path $logDir)) {
 }
 
 # Rotate and compress log if it grows too large
-if ((Get-Item $logPath).Length -gt 5MB) {
+if (Test-Path $logPath -and (Get-Item $logPath).Length -gt 5MB) {
     try {
         $rotatedLogFilename = (Get-Date).ToString('yyyyMMddHHmm')
         $rotatedLogPath = "$logPath.$rotatedLogFilename.bak"
