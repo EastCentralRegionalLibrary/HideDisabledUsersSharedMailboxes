@@ -76,6 +76,13 @@ param(
     [switch]    $NoSync
 )
 
+# Set ConfirmPreference based on session context
+if ($Host.UI.RawUI -and $Host.Name -ne 'ServerRemoteHost') {
+    $ConfirmPreference = 'High'
+} else {
+    $ConfirmPreference = 'None'
+}
+
 #Requires -RunAsAdministrator
 # Check for elevation
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -164,10 +171,10 @@ function Write-LogEntry {
     }
 }
 
-Write-LogEntry -Level INFO -Message "Starting script with effective parameter values:"
-Write-LogEntry -Level INFO -Message "$PSBoundParameters | Format-List * | Out-String -Width 80"
+Write-LogEntry -Level DEBUG -Message "Starting script with effective parameter values:"
+Write-LogEntry -Level DEBUG -Message "n$($PSBoundParameters | Format-List * | Out-String -Width 80)"
 
-if ($WhatIfPreference) {
+if ($PSCmdlet.ShouldProcess) {
     Write-LogEntry -Level INFO -Message "Running in WhatIf mode. No changes will be made."
 }
 
