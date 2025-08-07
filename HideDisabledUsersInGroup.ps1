@@ -12,28 +12,33 @@
     If changes are made and the script is not in dry-run mode, a delta synchronization is triggered using 
     Start-ADSyncSyncCycle to propagate the updates to Entra ID ( formerly Azure AD ).
 
-.PARAMETER EvaluateOnly
-    Optional switch. When specified, the script will run in evaluation mode and display which accounts would 
-    be modified without applying any changes.
+.PARAMETER WhatIf
+    PowerShell standard switch. When specified, simulates the script's actions without making changes.
+
+.PARAMETER Confirm
+    PowerShell standard switch. When specified, prompts for confirmation before applying changes.
 
 .OUTPUTS
     Log file written to the script directory: GAL_Hide_Log.txt
     Console output describing actions taken or simulated.
 
 .NOTES
-    Created     : 2025-08-07
+    Created     : 2025-08-06
     Last Updated: 2025-08-07
-    Requirements: 
-        - Must be run on a Domain Controller with the ActiveDirectory and ADSync modules available.
-        - User running the script must have permissions to modify user attributes in Active Directory.
+    Requires    : PowerShell 5.1+, ActiveDirectory module, ADSync module
+    Run As      : Administrator (elevation required for AD and ADSync cmdlets)
 
 .EXAMPLE
     .\HideDisabledUsersInGroup.ps1
     Hides all disabled users in the "GAL_Hidden_DisabledUsers" group that are not already hidden from the GAL.
 
 .EXAMPLE
-    .\HideDisabledUsersInGroup.ps1 -EvaluateOnly
-    Displays which users *would* be hidden from the GAL without making any actual changes.
+    .\HideDisabledUsersInGroup.ps1 -WhatIf
+    Simulates the script without making any changes.
+
+.EXAMPLE
+    .\HideDisabledUsersInGroup.ps1 -Confirm
+    Prompts before each user is updated.
 
 .LINK
     https://learn.microsoft.com/powershell/module/activedirectory/set-aduser
@@ -55,10 +60,9 @@
     See included LICENSE file
 #>
 
-# Dry Run parameter
-param (
-    [switch]$EvaluateOnly
-)
+# Support WhatIf and Confirm
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+param()
 
 #Requires -RunAsAdministrator
 # Check for elevation
@@ -133,10 +137,7 @@ Write-Log "Found $($groupMembers.Count) user(s) to process."
 
 foreach ($user in $groupMembers) {
     try {
-        if ($EvaluateOnly.IsPresent) {
-            Write-Host "[DRY RUN] Would hide: $($user.SamAccountName)" -ForegroundColor Yellow
-        }
-        else {
+        if ($PSCmdlet.ShouldProcess($user.SamAccountName, "Hide from GAL and update extensionAttribute15")) {
             # Hide AD user and set the extension attribute
             $changeTimeStampString = "Hidden from Exchange address book by script $runTimestamp"
             Set-ADUser -Identity $user.SamAccountName -Replace @{msExchHideFromAddressLists = $true; extensionAttribute15 = $changeTimeStampString } -ErrorAction Stop
@@ -160,21 +161,14 @@ foreach ($user in $groupMembers) {
     }
 }
 
-# If this is a dry run we should not sync
-if ($EvaluateOnly.IsPresent) {
-    $msg = "[DRY RUN] Script completed, no changes were made and no sync will be requested."
-    Write-Host $msg -ForegroundColor Yellow
-    Write-Log $msg
-}
-else {
-    # Run AD sync if changes were made
-    if ($changesMade) {
-        Write-Log "Script completed. Changes were made. Delta Sync requested."
+if ($changesMade) {
+    Write-Log "Script completed. Changes were made. Delta Sync requested."
+    if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
         Start-ADSyncSyncCycle -PolicyType Delta
     }
-    else {
-        Write-Log "Script completed. No changes were necessary."
-    }
+}
+else {
+    Write-Log "Script completed. No changes were necessary."
 }
 
 # Set exit code based on whether errors occurred and indicate which users failed
