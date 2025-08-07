@@ -164,23 +164,25 @@ function Write-LogEntry {
 
 }
 
+
+
 # Get members of the group and filter for disabled accounts that are not already hidden
 try {
     # PERFORMANCE: Use a single, efficient LDAP filter instead of multiple queries.
     # This finds all users who are members of the group, are disabled, and are not already hidden.
     $group = Get-ADGroup -Identity $GroupName -ErrorAction Stop
     # Debug dump of the group
-    Write-LogEntry -Level WARN -Message "Group object details:`n$(
+    Write-LogEntry -Level DEBUG -Message "Group object details:`n$(
         $group |
         Format-List * |
         Out-String -Width 80
     )"
     $escapedDN = [System.DirectoryServices.Protocols.LdapFilter]::Escape($group.DistinguishedName)
     $ldapFilter = "(&(memberOf=$escapedDN)($disabledUserValue)(!($msExchHideTrue)))"
-    Write-LogEntry -Level WARN -Message "LDAP filter: $ldapFilter"
+    Write-LogEntry -Level DEBUG -Message "LDAP filter: $ldapFilter"
     $groupMembers = Get-ADUser -LDAPFilter $ldapFilter -Properties msExchHideFromAddressLists -ErrorAction Stop
     # Debug dump of groupMembers collection
-    Write-LogEntry -Level WARN -Message "Member objects:`n$(
+    Write-LogEntry -Level DEBUG -Message "Member objects:`n$(
         $groupMembers |
         Format-List SamAccountName,Enabled,msExchHideFromAddressLists |
         Out-String -Width 80
