@@ -2,6 +2,15 @@
 
 A PowerShell script to hide disabled Active Directory users in a specified security group from the Exchange Online Global Address List (GAL), optionally triggering an Entra ID AD Connect synchronization to propagate changes to Entra ID.
 
+This script identifies disabled user accounts in the "GAL_Hidden_DisabledUsers" Active Directory group that are not currently hidden from the Exchange Global Address List (GAL), and sets the appropriate attributes to hide them.
+It modifies the following attributes for these users:
+
+ - Sets `msExchHideFromAddressLists` to `true` to hide the user from the GAL.
+ - Updates `extensionAttribute15` with a timestamp indicating when the user was hidden by the script.
+ - Sets `mailNickname` to the user's `SamAccountName` if it is not already set. This is required for the user to be hidden from the address lists. If it is not present they will be visible regardless of the msExchHideFromAddressLists value.
+
+
+
 ---
 
 ## Table of Contents
@@ -31,6 +40,8 @@ A PowerShell script to hide disabled Active Directory users in a specified secur
 
   * Read and write access to the target AD security group.
   * Permission to modify user `msExchHideFromAddressLists` attribute.
+  * Permission to modify user `mailNickname` attribute if missing or empty.
+  * Permission to modify user `extensionAttribute15` attribute for change timestamp.
   * Rights to run Entra ID Connect AD synchronization (if using sync).
 
 ## Installation
