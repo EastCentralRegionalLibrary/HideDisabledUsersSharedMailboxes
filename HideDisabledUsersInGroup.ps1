@@ -321,6 +321,7 @@ foreach ($user in $groupMembers) {
             }
             # If mailNickname is empty, add it
             if (-not $user.mailNickname) {
+                Write-LogEntry -Level DEBUG -Message "User $($user.SamAccountName) attribute mailNickname not set. Setting to match SamAccountName."
                 $replaceParams.mailNickname = $user.SamAccountName
             }
 
