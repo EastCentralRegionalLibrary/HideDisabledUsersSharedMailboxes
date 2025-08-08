@@ -37,7 +37,7 @@
 
 .NOTES
     Created     : 2025-08-06
-    Last Updated: 2025-08-07
+    Last Updated: 2025-08-08
     Requires    : PowerShell 5.1+, ActiveDirectory module, ADSync module
     Run As      : Administrator (elevation required for AD and ADSync cmdlets)
 
@@ -156,8 +156,10 @@ function Get-Timestamp {
 # Write a message to the log and the specified output stream
 function Write-LogEntry {
     param(
+        [Parameter(Mandatory = $false)]
         [ValidateSet('DEBUG', 'INFO', 'VERBOSE', 'WARN', 'ERROR')]
-        [string]$Level,
+        [string]$Level = 'INFO',
+        [Parameter(Mandatory = $true)]
         [string]$Message
     )
     $ts = Get-Timestamp
@@ -173,11 +175,11 @@ function Write-LogEntry {
     }
 
     # Invoke the appropriate cmdlet based on the level
-    if ($logLevelMap.ContainsKey($Level)) {
+    if ($Level -and $logLevelMap.ContainsKey($Level) -and $logLevelMap[$Level] -is [scriptblock]) {
         $logLevelMap[$Level].Invoke()
     }
     else {
-        Write-Warning "Unknown log level '$Level'. Message: $Message"
+        Write-Warning "Unknown or missing log level '$Level'. Message: $Message"
     }
 }
 
