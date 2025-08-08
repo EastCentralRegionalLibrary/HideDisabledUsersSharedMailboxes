@@ -7,6 +7,14 @@
     that are not currently hidden from the Exchange Global Address List (GAL), and sets the appropriate 
     attributes to hide them.
 
+    It modifies the following attributes for these users:
+
+    - Sets `msExchHideFromAddressLists` to `$true` to hide the user from the GAL.
+    - Updates `extensionAttribute15` with a timestamp indicating when the user was hidden by the script.
+    - Sets `mailNickname` to the user's `SamAccountName` if it is not already set - this is required for the
+        user to be hidden from the address lists. If it is not present they will be visible regardless of the
+        msExchHideFromAddressLists value.
+
     Optionally, the script supports a dry-run mode to preview which users would be updated without making changes.
 
     If changes are made and the script is not in dry-run mode, a delta synchronization is triggered using 
@@ -268,7 +276,7 @@ try {
     # Debug dump of groupMembers collection
     Write-LogEntry -Level DEBUG -Message "Member objects:`n$(
         $groupMembers |
-        Format-List SamAccountName,Enabled,msExchHideFromAddressLists |
+        Format-List SamAccountName,Enabled,msExchHideFromAddressLists,mailNickname |
         Out-String -Width 80
     )"
 
@@ -288,7 +296,9 @@ catch {
 $changesMade = $false
 # Variable to indicate if an error was encountered for one or more users
 $errorsEncountered = $false
+# A list which will contain users in error ( if any ) for later summary
 $failedUsers = @()
+# Variable to indicate if an error was encountered for Entra ID Connect AD Sync
 $failedSync = $false
 # Get a single timestamp for the entire script run for consistency.
 $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -297,7 +307,7 @@ $runTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 Write-LogEntry -Level INFO -Message  "Found $($groupMembers.Count) user(s) to process."
 
 # Iterate through users in the group, set the attribute to hide from address lists, and add record change timestamp in extension attribute 15.
-# If the user does not have the mailNickname set, set it to the SamAccountName
+# If the user does not have the mailNickname set, set it to the SamAccountName as it must be present for the user mailboxes to be hidden.
 foreach ($user in $groupMembers) {
     try {
         if ($PSCmdlet.ShouldProcess($user.SamAccountName, "Hide from GAL and update extensionAttribute15")) {
@@ -308,7 +318,7 @@ foreach ($user in $groupMembers) {
                 extensionAttribute15       = $changeTimeStampString
             }
             # If mailNickname is empty, add it
-            if ($user.mailNickname) {
+            if (-not $user.mailNickname) {
                 $replaceParams.mailNickname = $user.SamAccountName
             }
 
@@ -336,7 +346,8 @@ if ($changesMade -and -not $NoSync.IsPresent) {
     Write-LogEntry -Level INFO -Message  "Script completed. Changes were made. Delta Sync requested."
     if ($PSCmdlet.ShouldProcess("Entra ID Connect", "Start Delta Sync")) {
         try {
-            Start-ADSyncSyncCycle -PolicyType Delta -ErrorAction Stop
+            $syncResult = Start-ADSyncSyncCycle -PolicyType Delta -ErrorAction Stop
+            Write-LogEntry -Level INFO -Message "Sync Result:`n$($syncResult | Out-String -Width 80)"
         }
         catch {
             $errorsEncountered = $true
